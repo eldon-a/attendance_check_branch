@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<base target="_top">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>출석 체크인</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --primary: #2563eb;
+    --success: #16a34a;
+    --warn: #d97706;
+    --error: #dc2626;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --text: #0f172a;
+    --muted: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "맑은 고딕", sans-serif;
+    background: var(--bg); color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .container { max-width: 520px; margin: 0 auto; padding: 16px; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0 16px;
+  }
+  header h1 { font-size: 20px; margin: 0; }
+  .link {
+    font-size: 13px; color: var(--primary); text-decoration: none;
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tab {
+    flex: 1; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+    background: #fff; font-size: 14px; cursor: pointer;
+  }
+  .tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  #reader { width: 100%; border-radius: 10px; overflow: hidden; }
+  #reader video { width: 100% !important; }
+  input[type="text"] {
+    width: 100%; padding: 12px 14px; font-size: 16px;
+    border: 1px solid var(--border); border-radius: 10px; outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--primary); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  button {
+    padding: 12px 14px; font-size: 15px; font-weight: 600;
+    border: none; border-radius: 10px; cursor: pointer;
+    background: var(--primary); color: #fff;
+  }
+  button.secondary { background: #f1f5f9; color: var(--text); }
+  .checkbox { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-top: 10px; }
+  .results { max-height: 220px; overflow-y: auto; margin-top: 8px; border-top: 1px solid var(--border); }
+  .result-item { padding: 10px 4px; border-bottom: 1px solid #f1f5f9; cursor: pointer; }
+  .result-item:hover { background: #f8fafc; }
+  .result-item .name { font-weight: 600; }
+  .result-item .meta { font-size: 12px; color: var(--muted); }
+  .toast {
+    position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+    padding: 14px 18px; border-radius: 12px; color: #fff; font-weight: 600;
+    box-shadow: 0 8px 24px rgba(0,0,0,.15); z-index: 1000;
+    max-width: 90%; text-align: center; display: none;
+  }
+  .toast.show { display: block; animation: pop .2s ease-out; }
+  .toast.success { background: var(--success); }
+  .toast.warn { background: var(--warn); }
+  .toast.error { background: var(--error); }
+  @keyframes pop { from { transform: translate(-50%, -10px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+  .last-checkin {
+    text-align: center; padding: 14px; border-radius: 10px;
+    background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0;
+    margin-bottom: 12px; display: none;
+  }
+  .last-checkin.show { display: block; }
+  .status { font-size: 13px; color: var(--muted); text-align: center; padding: 6px; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>출석 체크인</h1>
+      <a class="link" href="?page=dashboard">대시보드</a>
+    </header>
+
+    <div id="lastCheckin" class="last-checkin"></div>
+
+    <div class="card">
+      <div class="tabs">
+        <button id="tabScan" class="tab active">QR 스캔</button>
+        <button id="tabSearch" class="tab">직접 입력</button>
+      </div>
+
+      <div id="scanPanel">
+        <div id="reader"></div>
+        <div class="status" id="scanStatus">카메라를 준비 중입니다…</div>
+      </div>
+
+      <div id="searchPanel" style="display:none;">
+        <div class="row">
+          <input id="searchInput" type="text" inputmode="search" placeholder="회원번호 또는 성명 입력" autocomplete="off">
+          <button id="searchBtn" style="flex:0 0 auto;">검색</button>
+        </div>
+        <div class="results" id="searchResults"></div>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" id="byVolunteer">
+        자원봉사자 대리 입력
+      </label>
+    </div>
+
+    <div class="status" id="memberStatus">회원 정보를 불러오는 중…</div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+<script>
+let MEMBERS = [];
+let scanner = null;
+let lastScanned = '';
+let lastScannedAt = 0;
+
+const $ = (id) => document.getElementById(id);
+
+function showToast(msg, type) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || 'success');
+  setTimeout(() => { t.className = 'toast'; }, 2500);
+}
+
+function showLastCheckin(member, time) {
+  const el = $('lastCheckin');
+  el.innerHTML = '<div style="font-size:18px;font-weight:700;">' + escapeHtml(member.name) + ' 님</div>' +
+                 '<div style="font-size:13px;margin-top:4px;">' + escapeHtml(time) + ' 체크인 완료</div>';
+  el.classList.add('show');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function loadMembers() {
+  google.script.run
+    .withSuccessHandler(function(list) {
+      MEMBERS = list || [];
+      $('memberStatus').textContent = '총 ' + MEMBERS.length + '명 회원 로드됨';
+    })
+    .withFailureHandler(function(err) {
+      $('memberStatus').textContent = '회원 로드 실패: ' + err.message;
+    })
+    .getMembers();
+}
+
+function doCheckIn(memberId, method) {
+  const byVolunteer = $('byVolunteer').checked;
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (res.ok) {
+        showToast(res.message, 'success');
+        showLastCheckin(res.member, res.time);
+      } else if (res.status === 'duplicate') {
+        showToast(res.message, 'warn');
+        showLastCheckin(res.member, res.time);
+      } else {
+        showToast(res.message || '체크인 실패', 'error');
+      }
+    })
+    .withFailureHandler(function(err) {
+      showToast('오류: ' + err.message, 'error');
+    })
+    .checkIn({ memberId: memberId, method: method, byVolunteer: byVolunteer });
+}
+
+// ===== 탭 전환 =====
+$('tabScan').addEventListener('click', () => switchTab('scan'));
+$('tabSearch').addEventListener('click', () => switchTab('search'));
+function switchTab(name) {
+  $('tabScan').classList.toggle('active', name === 'scan');
+  $('tabSearch').classList.toggle('active', name === 'search');
+  $('scanPanel').style.display = (name === 'scan') ? 'block' : 'none';
+  $('searchPanel').style.display = (name === 'search') ? 'block' : 'none';
+  if (name === 'scan') startScanner();
+  else stopScanner();
+}
+
+// ===== QR 스캔 =====
+function startScanner() {
+  if (scanner) return;
+  scanner = new Html5Qrcode('reader');
+  const config = { fps: 10, qrbox: { width: 240, height: 240 } };
+  Html5Qrcode.getCameras().then(cams => {
+    if (!cams || cams.length === 0) {
+      $('scanStatus').textContent = '카메라를 찾을 수 없습니다.';
+      return;
+    }
+    const back = cams.find(c => /back|rear|environment/i.test(c.label)) || cams[cams.length - 1];
+    scanner.start(back.id, config, onScanSuccess, () => {})
+      .then(() => { $('scanStatus').textContent = 'QR 코드를 스캔하세요'; })
+      .catch(err => { $('scanStatus').textContent = '카메라 시작 실패: ' + err; });
+  }).catch(err => {
+    $('scanStatus').textContent = '카메라 권한이 필요합니다: ' + err;
+  });
+}
+
+function stopScanner() {
+  if (scanner && scanner.isScanning) {
+    scanner.stop().then(() => { scanner.clear(); scanner = null; }).catch(() => { scanner = null; });
+  } else if (scanner) {
+    try { scanner.clear(); } catch (e) {}
+    scanner = null;
+  }
+}
+
+function onScanSuccess(decodedText) {
+  const now = Date.now();
+  // 같은 코드가 3초 내에 또 들어오면 무시 (디바운스)
+  if (decodedText === lastScanned && now - lastScannedAt < 3000) return;
+  lastScanned = decodedText;
+  lastScannedAt = now;
+  doCheckIn(String(decodedText).trim(), 'qr');
+}
+
+// ===== 직접 입력 검색 =====
+$('searchBtn').addEventListener('click', runSearch);
+$('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runSearch();
+});
+$('searchInput').addEventListener('input', renderSuggestions);
+
+function runSearch() {
+  const q = $('searchInput').value.trim();
+  if (!q) return;
+  // 회원번호 정확 일치 시 즉시 체크인
+  const exact = MEMBERS.find(m => m.id === q);
+  if (exact) {
+    doCheckIn(exact.id, 'search');
+    $('searchInput').value = '';
+    $('searchResults').innerHTML = '';
+    return;
+  }
+  renderSuggestions();
+}
+
+function renderSuggestions() {
+  const q = $('searchInput').value.trim().toLowerCase();
+  const box = $('searchResults');
+  if (!q) { box.innerHTML = ''; return; }
+  const matches = MEMBERS.filter(m =>
+    m.id.indexOf(q) === 0 || (m.name && m.name.toLowerCase().indexOf(q) >= 0)
+  ).slice(0, 20);
+  if (matches.length === 0) {
+    box.innerHTML = '<div class="result-item"><div class="meta">검색 결과 없음</div></div>';
+    return;
+  }
+  box.innerHTML = matches.map(m =>
+    '<div class="result-item" data-id="' + escapeHtml(m.id) + '">' +
+      '<div class="name">' + escapeHtml(m.name) + ' <span class="meta">(' + escapeHtml(m.id) + ')</span></div>' +
+      '<div class="meta">' + escapeHtml(m['소속/부서'] || m['본원/지부'] || '') + '</div>' +
+    '</div>'
+  ).join('');
+  Array.from(box.querySelectorAll('.result-item')).forEach(el => {
+    const id = el.getAttribute('data-id');
+    if (!id) return;
+    el.addEventListener('click', () => {
+      doCheckIn(id, 'search');
+      $('searchInput').value = '';
+      box.innerHTML = '';
+    });
+  });
+}
+
+// init
+loadMembers();
+startScanner();
+</script>
+</body>
+</html>

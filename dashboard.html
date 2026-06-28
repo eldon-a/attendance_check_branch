@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<base target="_top">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>출석 현황 대시보드</title>
+<style>
+  :root {
+    --primary: #2563eb; --success: #16a34a; --error: #dc2626;
+    --bg: #f8fafc; --card: #fff; --border: #e2e8f0; --text: #0f172a; --muted: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "맑은 고딕", sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  header h1 { margin: 0; font-size: 22px; }
+  .link {
+    font-size: 13px; color: var(--primary); text-decoration: none;
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff;
+  }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; text-align: center;
+  }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .value { font-size: 32px; font-weight: 700; margin-top: 6px; }
+  .stat.present .value { color: var(--success); }
+  .stat.absent .value { color: var(--error); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 16px; margin: 0 0 10px; }
+  .list { max-height: 480px; overflow-y: auto; }
+  .item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 4px; border-bottom: 1px solid #f1f5f9;
+  }
+  .item:last-child { border-bottom: none; }
+  .item .name { font-weight: 600; }
+  .item .meta { font-size: 12px; color: var(--muted); }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: #eff6ff; color: var(--primary);
+  }
+  .badge.vol { background: #fef3c7; color: #92400e; }
+  .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px; }
+  .refresh { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>출석 현황 <span id="dateLabel" class="refresh"></span></h1>
+      <a class="link" href="?page=checkin">체크인 화면</a>
+    </header>
+
+    <div class="stats">
+      <div class="stat"><div class="label">전체 회원</div><div class="value" id="totalCount">-</div></div>
+      <div class="stat present"><div class="label">출석</div><div class="value" id="presentCount">-</div></div>
+      <div class="stat absent"><div class="label">미출석</div><div class="value" id="absentCount">-</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>최근 체크인</h2>
+        <div class="list" id="recentList"><div class="meta">불러오는 중…</div></div>
+      </div>
+      <div class="card">
+        <h2>미출석 회원</h2>
+        <div class="list" id="absentList"><div class="meta">불러오는 중…</div></div>
+      </div>
+    </div>
+
+    <div class="footer">10초마다 자동 새로고침 · <span id="lastUpdate"></span></div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function refresh() {
+  google.script.run
+    .withSuccessHandler(render)
+    .withFailureHandler(err => {
+      $('recentList').innerHTML = '<div class="meta">오류: ' + escapeHtml(err.message) + '</div>';
+    })
+    .getTodayStats();
+}
+
+function render(data) {
+  $('dateLabel').textContent = data.date;
+  $('totalCount').textContent = data.total;
+  $('presentCount').textContent = data.present;
+  $('absentCount').textContent = data.absent;
+
+  if (!data.recent || data.recent.length === 0) {
+    $('recentList').innerHTML = '<div class="meta">아직 체크인이 없습니다.</div>';
+  } else {
+    $('recentList').innerHTML = data.recent.map(r =>
+      '<div class="item">' +
+        '<div>' +
+          '<div class="name">' + escapeHtml(r.name) + ' <span class="meta">(' + escapeHtml(r.id) + ')</span></div>' +
+          '<div class="meta">' + escapeHtml(r.time) + ' · ' + (r.method === 'qr' ? 'QR' : '검색') + '</div>' +
+        '</div>' +
+        (r.byVolunteer ? '<span class="badge vol">대리</span>' : '<span class="badge">셀프</span>') +
+      '</div>'
+    ).join('');
+  }
+
+  if (!data.absentList || data.absentList.length === 0) {
+    $('absentList').innerHTML = '<div class="meta">전원 출석!</div>';
+  } else {
+    $('absentList').innerHTML = data.absentList.map(m =>
+      '<div class="item">' +
+        '<div>' +
+          '<div class="name">' + escapeHtml(m.name) + ' <span class="meta">(' + escapeHtml(m.id) + ')</span></div>' +
+          '<div class="meta">' + escapeHtml(m['소속/부서'] || m['본원/지부'] || '') + '</div>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+  }
+  $('lastUpdate').textContent = '마지막 갱신 ' + new Date().toLocaleTimeString();
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
