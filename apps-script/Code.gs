@@ -364,7 +364,8 @@ function readAttendanceRecords(startStr, endStr) {
         name: String(values[r][3] || ''),
         time: normalizeTimeCell(values[r][4]),
         method: String(values[r][5] || ''),
-        byVolunteer: values[r][6] === 'Y'
+        byVolunteer: values[r][6] === 'Y',
+        note: String(values[r][7] || '')
       });
     }
   }
@@ -498,6 +499,108 @@ function generateThisMonthReport() {
   buildAttendanceReport(
     Utilities.formatDate(first, tz, 'yyyy-MM-dd'),
     Utilities.formatDate(last, tz, 'yyyy-MM-dd')
+  );
+}
+
+/** 특정일 참석자 목록 시트 생성 */
+function generateDailyAttendanceList() {
+  const ui = SpreadsheetApp.getUi();
+  const today = Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
+  const resp = ui.prompt(
+    '특정일 참석자 목록 생성',
+    '조회할 날짜를 입력하세요 (YYYY-MM-DD)\n예: ' + today,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  buildDailyAttendanceList(String(resp.getResponseText() || '').trim());
+}
+
+function buildDailyAttendanceList(dateStr) {
+  const ui = SpreadsheetApp.getUi();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || !parseYmd(dateStr)) {
+    ui.alert('날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력하세요.');
+    return;
+  }
+
+  CacheService.getScriptCache().remove('members_v2');
+  const members = getMembers();
+  const memberMap = {};
+  members.forEach(function(m) {
+    memberMap[m.id] = m;
+  });
+
+  const records = readAttendanceRecords(dateStr, dateStr);
+  const latestByMember = {};
+  records.forEach(function(r) {
+    latestByMember[r.id] = r;
+  });
+  const attendees = Object.keys(latestByMember).map(function(id) {
+    return latestByMember[id];
+  });
+  attendees.sort(function(a, b) {
+    return a.time > b.time ? 1 : (a.time < b.time ? -1 : 0);
+  });
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetName = '참석자_' + dateStr;
+  var sheet = ss.getSheetByName(sheetName);
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet(sheetName);
+  }
+
+  const summaryRows = [
+    ['특정일 참석자 목록'],
+    ['조회일', dateStr],
+    ['참석 인원', attendees.length + '명'],
+    ['전체 회원', members.length + '명'],
+    ['생성 시각', Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm:ss')],
+    ['']
+  ];
+  sheet.getRange(1, 1, summaryRows.length, 2).setValues(summaryRows.map(function(r) {
+    return [r[0] || '', r[1] || ''];
+  }));
+  sheet.getRange(1, 1).setFontWeight('bold').setFontSize(14);
+
+  const headerRow = summaryRows.length + 1;
+  const headers = ['순번', '회원번호', '성명', '소속/부서', '체크인시각', '방식', '대리입력', '비고'];
+  sheet.getRange(headerRow, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold').setBackground('#e8f0fe');
+
+  const rows = attendees.map(function(r, idx) {
+    const m = memberMap[r.id] || {};
+    return [
+      idx + 1,
+      r.id,
+      r.name,
+      m['소속/부서'] || m['본원/지부'] || '',
+      r.time,
+      r.method,
+      r.byVolunteer ? 'Y' : 'N',
+      r.note || ''
+    ];
+  });
+  if (rows.length > 0) {
+    sheet.getRange(headerRow + 1, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  sheet.setFrozenRows(headerRow);
+  sheet.setColumnWidth(1, 60);
+  sheet.setColumnWidth(2, 100);
+  sheet.setColumnWidth(3, 100);
+  sheet.setColumnWidth(4, 140);
+  sheet.setColumnWidth(5, 100);
+  sheet.setColumnWidth(6, 110);
+  sheet.setColumnWidth(7, 80);
+  sheet.setColumnWidth(8, 160);
+
+  ss.setActiveSheet(sheet);
+  ui.alert(
+    '특정일 참석자 목록 생성 완료\n\n' +
+    '시트: ' + sheetName + '\n' +
+    '조회일: ' + dateStr + '\n' +
+    '참석 인원: ' + attendees.length + '명'
   );
 }
 
@@ -714,6 +817,8 @@ function onOpen() {
     .createMenu('출석체크')
     .addItem('신규 회원 QR 생성', 'generateQrColumn')
     .addItem('전체 QR 재생성 (덮어쓰기)', 'regenerateAllQrColumn')
+    .addSeparator()
+    .addItem('특정일 참석자 목록 생성', 'generateDailyAttendanceList')
     .addSeparator()
     .addItem('출석 리포트 생성 (기간 지정)', 'generateAttendanceReport')
     .addItem('이번 주 리포트', 'generateThisWeekReport')
