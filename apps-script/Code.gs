@@ -21,6 +21,7 @@ const CONFIG = {
   MEMBER_ID_COL: '회원번호',
   MEMBER_NAME_COL: '성명',
   ATTENDANCE_LOG_PREFIX: '출입기록_',
+  QUERY_SHEET_NAME: '조회',
   QR_COLUMN_HEADER: 'QR코드',
   TIMEZONE: 'Asia/Seoul',
   MEMBER_CACHE_SECONDS: 60,  // 반복 호출 시 60초 CacheService 캐싱
@@ -604,6 +605,191 @@ function buildDailyAttendanceList(dateStr) {
   );
 }
 
+// ===== 조회 시트 =====
+function setupQuerySheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.QUERY_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.QUERY_SHEET_NAME);
+  } else {
+    sheet.clear();
+    sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).breakApart();
+  }
+
+  const today = Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd');
+  const year = Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy');
+
+  sheet.getRange('A1:K1').merge().setValue('출입 조회')
+    .setFontWeight('bold').setFontSize(16).setBackground('#e8f0fe');
+
+  sheet.getRange('A3').setValue('특정일 출입 조회').setFontWeight('bold');
+  sheet.getRange('A4').setValue('조회 날짜');
+  sheet.getRange('B4').setValue(today).setNumberFormat('@');
+  sheet.getRange('A5').setValue('출석 인원');
+  sheet.getRange('B5').setValue('');
+  sheet.getRange('A7:E7').setValues([['회원번호', '성명', '체크인시각', '방식', '대리입력']])
+    .setFontWeight('bold').setBackground('#e8f0fe');
+
+  sheet.getRange('G3').setValue('회원별 연간 출입 조회').setFontWeight('bold');
+  sheet.getRange('G4').setValue('성명 입력');
+  sheet.getRange('H4').setValue('');
+  sheet.getRange('G5').setValue('회원번호 선택');
+  sheet.getRange('H5').setValue('');
+  sheet.getRange('G6').setValue('조회 연도');
+  sheet.getRange('H6').setValue(year).setNumberFormat('0');
+  sheet.getRange('G7').setValue('출석일수');
+  sheet.getRange('H7').setValue('');
+
+  sheet.getRange('G9').setValue('동명이인 선택 후보').setFontWeight('bold');
+  sheet.getRange('G10:J10').setValues([['회원번호', '성명', '소속/부서', '상태']])
+    .setFontWeight('bold').setBackground('#f1f5f9');
+  sheet.getRange('G22:K22').setValues([['출석날짜', '체크인시각', '방식', '대리입력', '비고']])
+    .setFontWeight('bold').setBackground('#e8f0fe');
+
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidth(1, 100);
+  sheet.setColumnWidth(2, 110);
+  sheet.setColumnWidth(3, 100);
+  sheet.setColumnWidth(4, 100);
+  sheet.setColumnWidth(5, 80);
+  sheet.setColumnWidth(7, 110);
+  sheet.setColumnWidth(8, 120);
+  sheet.setColumnWidth(9, 120);
+  sheet.setColumnWidth(10, 100);
+  sheet.setColumnWidth(11, 160);
+
+  updateQueryDailyAttendance_(sheet);
+  ss.setActiveSheet(sheet);
+  SpreadsheetApp.getUi().alert(
+    '조회 시트를 생성했습니다.\n\n' +
+    '- B4: 특정일 입력\n' +
+    '- H4: 성명 입력\n' +
+    '- H5: 회원번호 선택\n' +
+    '- H6: 조회 연도'
+  );
+}
+
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    const sheet = e.range.getSheet();
+    if (!sheet || sheet.getName() !== CONFIG.QUERY_SHEET_NAME) return;
+
+    const row = e.range.getRow();
+    const col = e.range.getColumn();
+    if (row === 4 && col === 2) {
+      updateQueryDailyAttendance_(sheet);
+    } else if (row === 4 && col === 8) {
+      updateQueryMemberCandidates_(sheet);
+      updateQueryMemberAttendance_(sheet);
+    } else if ((row === 5 && col === 8) || (row === 6 && col === 8)) {
+      updateQueryMemberAttendance_(sheet);
+    }
+  } catch (err) {
+    try {
+      SpreadsheetApp.getActiveSpreadsheet().toast('조회 시트 갱신 오류: ' + err.message);
+    } catch (toastErr) {}
+  }
+}
+
+function updateQueryDailyAttendance_(sheet) {
+  const dateStr = normalizeDateCell(sheet.getRange('B4').getValue()) || String(sheet.getRange('B4').getDisplayValue() || '').trim();
+  clearQueryRange_(sheet, 8, 1, 5);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || !parseYmd(dateStr)) {
+    sheet.getRange('B5').setValue('날짜 형식 오류');
+    return;
+  }
+
+  sheet.getRange('B4').setValue(dateStr).setNumberFormat('@');
+  const daily = getDailyAttendance({ date: dateStr });
+  sheet.getRange('B5').setValue(daily.present + '명 / 전체 ' + daily.total + '명');
+
+  const rows = daily.attendees.slice().sort(function(a, b) {
+    return a.time > b.time ? 1 : (a.time < b.time ? -1 : 0);
+  }).map(function(r) {
+    return [r.id, r.name, r.time, r.method, r.byVolunteer ? 'Y' : 'N'];
+  });
+  if (rows.length > 0) {
+    sheet.getRange(8, 1, rows.length, 5).setValues(rows);
+  }
+}
+
+function updateQueryMemberCandidates_(sheet) {
+  const name = String(sheet.getRange('H4').getValue() || '').trim();
+  clearQueryRange_(sheet, 11, 7, 4, 10);
+  sheet.getRange('H5').clearDataValidations().setValue('');
+  sheet.getRange('H7').setValue('');
+  clearQueryRange_(sheet, 23, 7, 5);
+  if (!name) return;
+
+  CacheService.getScriptCache().remove('members_v2');
+  const members = getMembers();
+  const candidates = members.filter(function(m) {
+    return String(m.name || '').trim() === name;
+  });
+
+  const displayRows = candidates.slice(0, 10).map(function(m) {
+    return [m.id, m.name, memberBranch_(m), memberStatus_(m)];
+  });
+  if (displayRows.length > 0) {
+    sheet.getRange(11, 7, displayRows.length, 4).setValues(displayRows);
+  }
+
+  const ids = candidates.map(function(m) { return m.id; });
+  if (ids.length > 0) {
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(ids, true)
+      .setAllowInvalid(false)
+      .build();
+    sheet.getRange('H5').setDataValidation(rule);
+    if (ids.length === 1) sheet.getRange('H5').setValue(ids[0]);
+  } else {
+    sheet.getRange('H7').setValue('일치하는 회원 없음');
+  }
+}
+
+function updateQueryMemberAttendance_(sheet) {
+  clearQueryRange_(sheet, 23, 7, 5);
+  const memberId = normalizeId(sheet.getRange('H5').getValue());
+  const year = String(sheet.getRange('H6').getValue() || '').trim();
+  if (!memberId) {
+    sheet.getRange('H7').setValue('');
+    return;
+  }
+  if (!/^\d{4}$/.test(year)) {
+    sheet.getRange('H7').setValue('연도 형식 오류');
+    return;
+  }
+
+  const records = readAttendanceRecords(year + '-01-01', year + '-12-31')
+    .filter(function(r) { return r.id === memberId; })
+    .sort(function(a, b) {
+      if (a.date !== b.date) return a.date > b.date ? 1 : -1;
+      return a.time > b.time ? 1 : (a.time < b.time ? -1 : 0);
+    });
+
+  sheet.getRange('H7').setValue(records.length + '일');
+  const rows = records.map(function(r) {
+    return [r.date, r.time, r.method, r.byVolunteer ? 'Y' : 'N', r.note || ''];
+  });
+  if (rows.length > 0) {
+    sheet.getRange(23, 7, rows.length, 5).setValues(rows);
+  }
+}
+
+function clearQueryRange_(sheet, startRow, startCol, numCols, maxRows) {
+  const rows = maxRows || Math.max(sheet.getMaxRows() - startRow + 1, 1);
+  sheet.getRange(startRow, startCol, rows, numCols).clearContent();
+}
+
+function memberBranch_(member) {
+  return member['소속/부서'] || member['본원/지부'] || '';
+}
+
+function memberStatus_(member) {
+  return member['상태'] || member['회원상태'] || member['재적상태'] || '';
+}
+
 /**
  * 실제 리포트 생성 로직 (UI 프롬프트 없이 날짜 문자열만 받아 동작).
  * 테스트 및 프로그래밍 호출용.
@@ -818,6 +1004,7 @@ function onOpen() {
     .addItem('신규 회원 QR 생성', 'generateQrColumn')
     .addItem('전체 QR 재생성 (덮어쓰기)', 'regenerateAllQrColumn')
     .addSeparator()
+    .addItem('조회 시트 만들기', 'setupQuerySheet')
     .addItem('특정일 참석자 목록 생성', 'generateDailyAttendanceList')
     .addSeparator()
     .addItem('출석 리포트 생성 (기간 지정)', 'generateAttendanceReport')
